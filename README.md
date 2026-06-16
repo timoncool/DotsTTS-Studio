@@ -22,7 +22,7 @@ Built on the [dots.tts](https://huggingface.co/rednote-hilab) family — a ~2B f
 - **🧬 Voice cloning** — zero-shot from a reference clip: continuation clone (with transcript, best similarity) or timbre-only **x-vector** (no transcript). **Multilingual Whisper** auto-transcription button; preset library + on-demand **Russian voice pack (700+)**.
 - **🎬 Multi-voice** — a manual `Speaker N:` script → each speaker its own voice, stitched with **loudness leveling across speakers** (LUFS −16, podcast standard).
 - **📦 Batch** — a list of texts → mass synthesis with a live log.
-- **⚙️ Control** — model picker, language tag (~90), `num_steps`, `guidance`, `speaker_scale`, seed; output **WAV / MP3 / FLAC / OGG** (48 kHz) saved to `output/` with timestamps. **RU / EN** UI, dark theme.
+- **⚙️ Control** — model picker, language tag (auto-detect + 12 presets), `num_steps`, `guidance`, `speaker_scale`, seed; output **WAV / MP3 / FLAC / OGG** (48 kHz) saved to `output/` with timestamps. **RU / EN** UI, dark theme.
 
 **Models (download on first run, ~5.2 GB each):**
 

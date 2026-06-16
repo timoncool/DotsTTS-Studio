@@ -10,3 +10,5 @@ ffmpeg/
 __pycache__/
 *.pyc
 cuda_version.txt
+_test_synth.py
+_test_*.py

@@ -33,7 +33,6 @@ if not exist "%TEMP%" mkdir "%TEMP%"
 
 set "HF_HOME=%SCRIPT_DIR%models"
 set "HUGGINGFACE_HUB_CACHE=%SCRIPT_DIR%models"
-set "TRANSFORMERS_CACHE=%SCRIPT_DIR%models"
 if not exist "%HF_HOME%" mkdir "%HF_HOME%"
 
 set "TORCH_HOME=%SCRIPT_DIR%models\torch"

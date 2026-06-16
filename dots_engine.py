@@ -372,6 +372,10 @@ def synth_text_stream(text, *, label=DEFAULT_MODEL, ref_audio=None, ref_text=Non
                 if buf_len >= target:
                     yield sr, np.concatenate(buf).astype(np.float32)
                     buf, buf_len = [], 0
+            # конец текст-чанка: остаток с тримом хвоста (убирает EOS-мусор на стыке чанков)
+            if buf:
+                yield sr, _trim_tail(np.concatenate(buf).astype(np.float32), sr)
+                buf, buf_len = [], 0
         if buf:
             yield sr, _trim_tail(np.concatenate(buf).astype(np.float32), sr)
     finally:
