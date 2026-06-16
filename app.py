@@ -150,6 +150,8 @@ _RU = {
     "steps": "Шагов (mf = 4)", "guidance": "Guidance (CFG, >2 искажает)",
     "speaker_scale": "Сила тембра референса", "seed": "Сид (-1 = случайно)",
     "normalize": "Нормализовать числа/даты (медленнее)",
+    "guid_info": "Только soar/base; у mf CFG встроен (слайдер не влияет).",
+    "spk_info": ">1.5 — ближе к референсу, но риск артефактов.",
     "ref_voice": "Аудио-референс (голос)", "ref_text": "Транскрипт референса (для лучшего клона)",
     "ph_ref_text": "Что произносится в референсе… пусто = клон только по тембру (x-vector)",
     "ref_hint": "💡 Реф: ~10 сек чистой речи без шума. Транскрипт (или кнопка распознавания) даёт лучший клон; язык лучше выставить явно.",
@@ -174,6 +176,8 @@ _EN = {
     "steps": "Steps (mf = 4)", "guidance": "Guidance (CFG, >2 distorts)",
     "speaker_scale": "Reference timbre strength", "seed": "Seed (-1 = random)",
     "normalize": "Normalize numbers/dates (slower)",
+    "guid_info": "soar/base only; mf has CFG fused (slider has no effect).",
+    "spk_info": ">1.5 = closer to reference, but artifact risk.",
     "ref_voice": "Reference audio (voice)", "ref_text": "Reference transcript (for best clone)",
     "ph_ref_text": "What the reference says… empty = timbre-only clone (x-vector)",
     "ref_hint": "💡 Reference: ~10s of clean speech, no noise. A transcript (or the transcribe button) gives the best clone; set the language explicitly.",
@@ -366,9 +370,9 @@ _ASR = None
 def _get_asr():
     global _ASR
     if _ASR is None:
-        from transformers import AutoProcessor, MoonshineForConditionalGeneration
-        proc = AutoProcessor.from_pretrained("UsefulSensors/moonshine-base")
-        amodel = MoonshineForConditionalGeneration.from_pretrained("UsefulSensors/moonshine-base").eval()
+        from transformers import WhisperProcessor, WhisperForConditionalGeneration
+        proc = WhisperProcessor.from_pretrained("openai/whisper-base")
+        amodel = WhisperForConditionalGeneration.from_pretrained("openai/whisper-base").eval()
         _ASR = (proc, amodel)
     return _ASR
 
@@ -382,6 +386,8 @@ def transcribe(ref_audio):
         import torch
         import soundfile as sf
         import torchaudio
+        if _ASR is None:
+            gr.Info("Первая загрузка ASR-модели (Whisper, ~290 МБ)… / Downloading ASR model…")
         proc, amodel = _get_asr()
         data, sr = sf.read(ref_audio, dtype="float32", always_2d=True)
         wav = torch.from_numpy(data).mean(dim=1)
@@ -389,11 +395,11 @@ def transcribe(ref_audio):
             wav = torchaudio.functional.resample(wav, sr, 16000)
         inp = proc(wav.numpy(), sampling_rate=16000, return_tensors="pt")
         with torch.no_grad():
-            tok = amodel.generate(**inp)
-        return proc.decode(tok[0], skip_special_tokens=True).strip()
+            tok = amodel.generate(inp.input_features, max_new_tokens=128)
+        return proc.batch_decode(tok, skip_special_tokens=True)[0].strip()
     except Exception as e:
         print(f"[asr] {e}")
-        return gr.update()
+        return "⚠️ Распознавание не удалось / ASR failed"
 
 
 # ----------------------------------------------------------------------------
@@ -480,34 +486,49 @@ def parse_script(script):
 # ----------------------------------------------------------------------------
 # Колбэки генерации
 # ----------------------------------------------------------------------------
+def _friendly(e):
+    s = str(e).lower()
+    if "out of memory" in s or ("cuda" in s and "memory" in s):
+        return "Недостаточно VRAM — выберите float16 или короче текст / Out of VRAM — try float16 or shorter text."
+    return f"Ошибка генерации / Generation error: {str(e)[:200]}"
+
+
 def cb_tts(text, model, language, steps, guidance, spk, normalize, seed):
-    """Живой стрим: yield чанки в плеер по мере синтеза, в конце сохраняем полный файл."""
+    """Живой стрим: yield чанки в плеер; в конце (или при Стопе) сохраняем что наиграло."""
     eng.clear_cancel()
     parts, sr = [], eng.SR_FALLBACK
-    for sr, chunk in eng.synth_text_stream(text, label=model, language=language, num_steps=steps,
-                                           guidance_scale=guidance, speaker_scale=spk,
-                                           normalize=normalize, seed=seed):
-        parts.append(chunk)
-        yield (sr, chunk)
-    if parts:
-        _save(sr, eng._trim_tail(np.concatenate(parts), sr), "tts")
+    try:
+        for sr, chunk in eng.synth_text_stream(text, label=model, language=language, num_steps=steps,
+                                               guidance_scale=guidance, speaker_scale=spk,
+                                               normalize=normalize, seed=seed):
+            parts.append(chunk)
+            yield (sr, chunk)
+    except Exception as e:
+        raise gr.Error(_friendly(e))
+    finally:
+        if parts:
+            _save(sr, eng._trim_tail(np.concatenate(parts), sr), "tts")
 
 
 def cb_clone(text, model, ref_audio, ref_text, preset, language, steps, guidance, spk, normalize, seed):
-    """Живой стрим клона: yield чанки в плеер, в конце сохраняем полный файл."""
+    """Живой стрим клона: yield чанки в плеер; в конце (или при Стопе) сохраняем что наиграло."""
     eng.clear_cancel()
     ref = ref_audio or (voice_path(preset) if preset and preset != OWN_FILE else None)
     parts, sr = [], eng.SR_FALLBACK
-    for sr, chunk in eng.synth_text_stream(text, label=model, ref_audio=ref, ref_text=ref_text,
-                                           language=language, num_steps=steps, guidance_scale=guidance,
-                                           speaker_scale=spk, normalize=normalize, seed=seed):
-        parts.append(chunk)
-        yield (sr, chunk)
-    if parts:
-        _save(sr, eng._trim_tail(np.concatenate(parts), sr), "clone")
+    try:
+        for sr, chunk in eng.synth_text_stream(text, label=model, ref_audio=ref, ref_text=ref_text,
+                                               language=language, num_steps=steps, guidance_scale=guidance,
+                                               speaker_scale=spk, normalize=normalize, seed=seed):
+            parts.append(chunk)
+            yield (sr, chunk)
+    except Exception as e:
+        raise gr.Error(_friendly(e))
+    finally:
+        if parts:
+            _save(sr, eng._trim_tail(np.concatenate(parts), sr), "clone")
 
 
-def cb_multi_synth(script, model, language, steps, guidance, spk,
+def cb_multi_synth(script, model, language, steps, guidance, spk, normalize, seed,
                    a0, a1, a2, a3, t0, t1, t2, t3, progress=gr.Progress()):
     """Парсим 'Speaker N:' → синтез каждой реплики голосом диктора N → LUFS-склейка."""
     eng.clear_cancel()
@@ -520,13 +541,20 @@ def cb_multi_synth(script, model, language, steps, guidance, spk,
         ref = audios[sid] if 0 <= sid < MAX_SPK else None
         rt = (texts[sid] if 0 <= sid < MAX_SPK else None) or None
         turns.append({"text": txt, "ref_audio": ref, "ref_text": rt})
-    sr, wav = eng.synth_turns(turns, label=model, language=language, num_steps=steps,
-                              guidance_scale=guidance, speaker_scale=spk)
+
+    def _prog(i, n):
+        progress((i + 1) / max(n, 1), desc=f"{i + 1}/{n}")
+    try:
+        sr, wav = eng.synth_turns(turns, label=model, language=language, num_steps=steps,
+                                  guidance_scale=guidance, speaker_scale=spk, normalize=normalize,
+                                  seed=seed, on_progress=_prog)
+    except Exception as e:
+        raise gr.Error(_friendly(e))
     _save(sr, wav, "multi")
     return (sr, wav)
 
 
-def cb_batch(texts, model, language, steps, guidance, spk, normalize, progress=gr.Progress()):
+def cb_batch(texts, model, language, steps, guidance, spk, normalize, seed, progress=gr.Progress()):
     eng.clear_cancel()
     lines = [t.strip() for t in (texts or "").splitlines() if t.strip()]
     log, paths = [], []
@@ -535,8 +563,11 @@ def cb_batch(texts, model, language, steps, guidance, spk, normalize, progress=g
             yield "\n".join(log) + "\n\n⏹ Остановлено / Stopped.", paths
             return
         progress((i + 1) / max(len(lines), 1), desc=f"{i + 1}/{len(lines)}")
-        sr, wav = eng.synth_text(line, label=model, language=language, num_steps=steps,
-                                 guidance_scale=guidance, speaker_scale=spk, normalize=normalize)
+        try:
+            sr, wav = eng.synth_text(line, label=model, language=language, num_steps=steps,
+                                     guidance_scale=guidance, speaker_scale=spk, normalize=normalize, seed=seed)
+        except Exception as e:
+            raise gr.Error(_friendly(e))
         p = _save(sr, wav, "batch")
         if p:
             paths.append(p)
@@ -585,11 +616,13 @@ def build():
         prec_dd.change(lambda p: eng.set_precision(p), [prec_dd], None)
         fmt_dd.change(set_out_format, [fmt_dd], None)
 
+        _mf0 = eng.is_mf(eng.DEFAULT_MODEL)
+
         def _adv():
-            # старт = под дефолтную модель mf: 4 шага, слайдер заблокирован (mf фиксирован)
-            steps = gr.Slider(1, 32, 4, step=1, label=T("steps"), interactive=False)
-            guid = gr.Slider(1.0, 2.0, 1.2, step=0.1, label=T("guidance"))
-            spk = gr.Slider(0.0, 3.0, 1.5, step=0.1, label=T("speaker_scale"))
+            # старт под дефолтную модель: для mf шаги=4 и guidance заблокированы (CFG вшит в MeanFlow)
+            steps = gr.Slider(1, 32, (4 if _mf0 else 10), step=1, label=T("steps"), interactive=not _mf0)
+            guid = gr.Slider(1.0, 2.0, 1.2, step=0.1, label=T("guidance"), interactive=not _mf0, info=T("guid_info"))
+            spk = gr.Slider(0.0, 3.0, 1.5, step=0.1, label=T("speaker_scale"), info=T("spk_info"))
             seed = gr.Number(-1, label=T("seed"), precision=0)
             norm = gr.Checkbox(label=T("normalize"), value=False)
             return steps, guid, spk, seed, norm
@@ -649,35 +682,37 @@ def build():
                 m_script = gr.Textbox(label=T("script"), placeholder=T("ph_script"), lines=9)
                 gr.Examples(MULTI_EXAMPLES, inputs=[m_script], label=T("examples"))
                 with gr.Accordion(T("advanced"), open=False):
-                    m_steps, m_guid, m_spk, _m_seed, _m_norm = _adv()
+                    m_steps, m_guid, m_spk, m_seed, m_norm = _adv()
                 m_btn = gr.Button(T("generate"), variant="primary", size="lg")
                 m_stop = gr.Button(T("stop"), variant="stop")
                 m_out = gr.Audio(label=T("result"), type="numpy", autoplay=True)
                 ev_multi = m_btn.click(
                     cb_multi_synth,
-                    [m_script, model_dd, lang_dd, m_steps, m_guid, m_spk] + m_audios + m_texts, [m_out])
+                    [m_script, model_dd, lang_dd, m_steps, m_guid, m_spk, m_norm, m_seed] + m_audios + m_texts, [m_out])
                 m_stop.click(eng.request_cancel, None, None, queue=False, cancels=[ev_multi])
 
             # 4. Пакет
             with gr.Tab(T("tab_batch")):
                 bt_text = gr.Textbox(label=T("batch_text"), placeholder=T("ph_batch"), lines=6)
                 with gr.Accordion(T("advanced"), open=False):
-                    bt_steps, bt_guid, bt_spk, _bt_seed, bt_norm = _adv()
+                    bt_steps, bt_guid, bt_spk, bt_seed, bt_norm = _adv()
                 bt_btn = gr.Button(T("generate"), variant="primary", size="lg")
                 bt_stop = gr.Button(T("stop"), variant="stop")
                 bt_log = gr.Textbox(label=T("log"), lines=8)
                 bt_files = gr.Files(label=T("result"))
-                ev_batch = bt_btn.click(cb_batch, [bt_text, model_dd, lang_dd, bt_steps, bt_guid, bt_spk, bt_norm],
+                ev_batch = bt_btn.click(cb_batch, [bt_text, model_dd, lang_dd, bt_steps, bt_guid, bt_spk, bt_norm, bt_seed],
                                         [bt_log, bt_files])
                 bt_stop.click(eng.request_cancel, None, None, queue=False, cancels=[ev_batch])
 
-        # Смена модели → подходящие настройки: mf фиксирован на 4 шага (слайдер заблокирован),
-        # soar/base — 10 шагов (разблокирован, 10–32). guidance/speaker_scale одинаковы у всех.
+        # Смена модели → подходящие настройки: для mf шаги=4 И guidance заблокированы (CFG вшит),
+        # soar/base — шаги 10 (10–32) и guidance активны.
         def _model_settings(label):
-            is_mf = "-mf" in eng.model_repo(label)
-            upd = gr.update(value=(4 if is_mf else 10), interactive=not is_mf)
-            return [upd, upd, upd, upd]
-        model_dd.change(_model_settings, [model_dd], [t_steps, c_steps, m_steps, bt_steps])
+            mf = eng.is_mf(label)
+            steps_u = gr.update(value=(4 if mf else 10), interactive=not mf)
+            guid_u = gr.update(interactive=not mf)
+            return [steps_u, steps_u, steps_u, steps_u, guid_u, guid_u, guid_u, guid_u]
+        model_dd.change(_model_settings, [model_dd],
+                        [t_steps, c_steps, m_steps, bt_steps, t_guid, c_guid, m_guid, bt_guid])
 
     return demo
 

@@ -26,7 +26,8 @@ if exist "dots.tts\.git" (
     cd dots.tts
     git pull
     cd ..
-    python\python.exe -m pip install -e "dots.tts" --no-deps --no-warn-script-location
+    python\python.exe -m pip install -e "dots.tts" --no-deps -c "dots.tts\constraints\recommended.txt" --no-warn-script-location
+    python\python.exe -m pip install -r requirements.txt -c "dots.tts\constraints\recommended.txt" --no-warn-script-location
 )
 
 echo Обновление завершено!
