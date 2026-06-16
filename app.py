@@ -62,6 +62,7 @@ DEVICE_INFO = eng.device_info()
 MODEL_CHOICES = list(eng.MODELS.keys())
 MAX_SPK = 4
 OWN_FILE = "— свой файл / own file —"
+_DEF_VOICE = "English_Female"   # дефолт-голос Озвучки (модель клонирующая — без рефа щелчки)
 
 CLOUD_VOICES_REPO = "Slait/russia_voices"
 CLOUD_VOICES_BASE = "https://huggingface.co/datasets/Slait/russia_voices/resolve/main"
@@ -145,6 +146,7 @@ _RU = {
     "tab_tts": "🎙️ Озвучка", "tab_clone": "🧬 Клонирование",
     "tab_multi": "🎬 Мульти-голос", "tab_batch": "📦 Пакет",
     "text": "Текст", "ph_text": "Введите текст для озвучки…",
+    "tts_voice": "Голос (реф — без него щелчки)",
     "generate": "🔊 Озвучить", "stop": "⏹ Стоп", "result": "Результат", "advanced": "Доп. настройки",
     "model": "Модель", "precision": "Точность (VRAM)", "out_format": "Формат вывода", "language": "Язык",
     "steps": "Шагов (mf = 4)", "guidance": "Guidance (CFG, >2 искажает)",
@@ -171,6 +173,7 @@ _EN = {
     "tab_tts": "🎙️ TTS", "tab_clone": "🧬 Cloning",
     "tab_multi": "🎬 Multi-voice", "tab_batch": "📦 Batch",
     "text": "Text", "ph_text": "Type text to synthesize…",
+    "tts_voice": "Voice (reference — required, else clicks)",
     "generate": "🔊 Generate", "stop": "⏹ Stop", "result": "Result", "advanced": "Advanced",
     "model": "Model", "precision": "Precision (VRAM)", "out_format": "Output format", "language": "Language",
     "steps": "Steps (mf = 4)", "guidance": "Guidance (CFG, >2 distorts)",
@@ -493,39 +496,33 @@ def _friendly(e):
     return f"Ошибка генерации / Generation error: {str(e)[:200]}"
 
 
-def cb_tts(text, model, language, steps, guidance, spk, normalize, seed):
-    """Живой стрим: yield чанки в плеер; в конце (или при Стопе) сохраняем что наиграло."""
+def cb_tts(text, model, voice, language, steps, guidance, spk, normalize, seed):
+    """Озвучка = синтез голосом-рефом (модель клонирующая, без рефа щёлкает). Без стриминга."""
     eng.clear_cancel()
-    parts, sr = [], eng.SR_FALLBACK
+    ref = voice_path(voice) if voice and voice != OWN_FILE else None
+    rtext = voice_transcript(voice) if voice and voice != OWN_FILE else ""
     try:
-        for sr, chunk in eng.synth_text_stream(text, label=model, language=language, num_steps=steps,
-                                               guidance_scale=guidance, speaker_scale=spk,
-                                               normalize=normalize, seed=seed):
-            parts.append(chunk)
-            yield (sr, chunk)
+        sr, wav = eng.synth_text(text, label=model, ref_audio=ref, ref_text=rtext, language=language,
+                                 num_steps=steps, guidance_scale=guidance, speaker_scale=spk,
+                                 normalize=normalize, seed=seed)
     except Exception as e:
         raise gr.Error(_friendly(e))
-    finally:
-        if parts:
-            _save(sr, eng._trim_tail(np.concatenate(parts), sr), "tts")
+    _save(sr, wav, "tts")
+    return (sr, wav)
 
 
 def cb_clone(text, model, ref_audio, ref_text, preset, language, steps, guidance, spk, normalize, seed):
-    """Живой стрим клона: yield чанки в плеер; в конце (или при Стопе) сохраняем что наиграло."""
+    """Клонирование (без стриминга): полный синтез + нормализация + сохранение."""
     eng.clear_cancel()
     ref = ref_audio or (voice_path(preset) if preset and preset != OWN_FILE else None)
-    parts, sr = [], eng.SR_FALLBACK
     try:
-        for sr, chunk in eng.synth_text_stream(text, label=model, ref_audio=ref, ref_text=ref_text,
-                                               language=language, num_steps=steps, guidance_scale=guidance,
-                                               speaker_scale=spk, normalize=normalize, seed=seed):
-            parts.append(chunk)
-            yield (sr, chunk)
+        sr, wav = eng.synth_text(text, label=model, ref_audio=ref, ref_text=ref_text, language=language,
+                                 num_steps=steps, guidance_scale=guidance, speaker_scale=spk,
+                                 normalize=normalize, seed=seed)
     except Exception as e:
         raise gr.Error(_friendly(e))
-    finally:
-        if parts:
-            _save(sr, eng._trim_tail(np.concatenate(parts), sr), "clone")
+    _save(sr, wav, "clone")
+    return (sr, wav)
 
 
 def cb_multi_synth(script, model, language, steps, guidance, spk, normalize, seed,
@@ -633,13 +630,16 @@ def build():
                 with gr.Row():
                     with gr.Column():
                         t_text = gr.Textbox(label=T("text"), placeholder=T("ph_text"), lines=5)
+                        _tvs = scan_voices()
+                        t_voice = gr.Dropdown(_tvs, value=(_DEF_VOICE if _DEF_VOICE in _tvs else (_tvs[0] if _tvs else None)),
+                                              label=T("tts_voice"))
                         with gr.Accordion(T("advanced"), open=False):
                             t_steps, t_guid, t_spk, t_seed, t_norm = _adv()
                         t_btn = gr.Button(T("generate"), variant="primary", size="lg")
                         t_stop = gr.Button(T("stop"), variant="stop")
-                    t_out = gr.Audio(label=T("result"), type="numpy", streaming=True, autoplay=True)
+                    t_out = gr.Audio(label=T("result"), type="numpy", autoplay=True)
                 gr.Examples(TTS_EXAMPLES, inputs=[t_text], label=T("examples"))
-                ev_tts = t_btn.click(cb_tts, [t_text, model_dd, lang_dd, t_steps, t_guid, t_spk, t_norm, t_seed], [t_out])
+                ev_tts = t_btn.click(cb_tts, [t_text, model_dd, t_voice, lang_dd, t_steps, t_guid, t_spk, t_norm, t_seed], [t_out])
                 t_stop.click(eng.request_cancel, None, None, queue=False, cancels=[ev_tts])
 
             # 2. Клонирование
@@ -657,7 +657,7 @@ def build():
                             c_steps, c_guid, c_spk, c_seed, c_norm = _adv()
                         c_btn = gr.Button(T("generate"), variant="primary", size="lg")
                         c_stop = gr.Button(T("stop"), variant="stop")
-                    c_out = gr.Audio(label=T("result"), type="numpy", streaming=True, autoplay=True)
+                    c_out = gr.Audio(label=T("result"), type="numpy", autoplay=True)
                 with gr.Accordion(T("cloud_title"), open=False):
                     cl_status = gr.Textbox(label=T("cloud_status"), interactive=False)
                     with gr.Row():
@@ -723,7 +723,7 @@ def prewarm():
         return
     try:
         print("[prewarm] загрузка модели на старте...", flush=True)
-        eng.generate_one("Прогрев.", label=eng.DEFAULT_MODEL)
+        eng.get_runtime(eng.DEFAULT_MODEL)   # только загрузка (compile нет); без мусорной генерации
         print("[prewarm] готово — модель в памяти", flush=True)
     except Exception as e:
         print(f"[prewarm] пропущен ({e})", flush=True)

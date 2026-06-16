@@ -144,6 +144,13 @@ echo Проверка установки...
 python\python.exe -c "import torch, dots_tts.runtime; print('[OK] torch', torch.__version__, '| CUDA:', torch.cuda.is_available())"
 if errorlevel 1 echo [ВНИМАНИЕ] Проверка импорта не прошла - см. ошибки выше (не хватает зависимости?).
 
+REM ===== Модель по умолчанию (mf, ~5 ГБ) качается ЗДЕСЬ, чтобы первый запуск был без ожидания =====
+echo Загружаю модель по умолчанию dots.tts-mf (~5 ГБ)...
+set "HF_HOME=%SCRIPT_DIR%models"
+set "HF_HUB_DISABLE_SYMLINKS_WARNING=1"
+python\python.exe -c "from huggingface_hub import snapshot_download; snapshot_download('rednote-hilab/dots.tts-mf')"
+if errorlevel 1 echo [ВНИМАНИЕ] Модель не докачалась - скачается при первом запуске.
+
 echo %CUDA_VERSION%> cuda_version.txt
 
 echo ========================================

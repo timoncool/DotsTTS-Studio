@@ -20,7 +20,8 @@ MODELS = {
 DEFAULT_MODEL = "mf · быстро, 4 шага · ~5.2 ГБ (дефолт)"
 
 CHUNK_MAX_CHARS = 200   # наша эвристика: дробим для стабильности длинной формы и кроссфейда
-REF_MAX_SEC = 15        # мейнтейнер: ~10с идеал, длиннее не помогает; режем (меньше prefill, быстрее)
+REF_MAX_SEC = 90        # режем ТОЛЬКО экстремально длинный реф. Обрезка рвёт транскрипт→x-vector→глюк,
+                        # поэтому держим высоко: пресеты ≤~55с идут полным continuation-клоном (чисто)
 
 _runtime = None
 _loaded = None          # (repo_id, precision) что сейчас в памяти
@@ -318,25 +319,31 @@ def generate_one(text, *, label=DEFAULT_MODEL, ref_audio=None, ref_text=None, la
 
 def synth_text(text, *, label=DEFAULT_MODEL, ref_audio=None, ref_text=None, language=None,
                num_steps=10, guidance_scale=1.2, speaker_scale=1.5, normalize=False, seed=-1):
-    """Текст любой длины: короткий — одним проходом, длинный — чанки ≤200 + кроссфейд."""
+    """Текст любой длины: короткий — одним проходом, длинный — чанки ≤200 + кроссфейд.
+    Итог нормализуется (LUFS −16 + пик-лимит −1 dBFS) — ровный уровень, без горячего звука/клиппинга."""
+    import numpy as np
     chunks = _chunk(text)
     if len(chunks) <= 1:
-        return generate_one(text, label=label, ref_audio=ref_audio, ref_text=ref_text,
-                            language=language, num_steps=num_steps, guidance_scale=guidance_scale,
-                            speaker_scale=speaker_scale, normalize=normalize, seed=seed)
-    if seed is not None and int(seed) >= 0:
-        _seed(seed)   # сид 1 раз на весь текст; чанки наследуют продолжение RNG (вариация без повтора)
-    sr, parts = SR_FALLBACK, []
-    for i, ch in enumerate(chunks):
-        if _CANCEL:
-            break
-        print(f"[gen] чанк {i + 1}/{len(chunks)}", flush=True)
-        sr, a = generate_one(ch, label=label, ref_audio=ref_audio, ref_text=ref_text,
-                             language=language, num_steps=num_steps, guidance_scale=guidance_scale,
-                             speaker_scale=speaker_scale, normalize=normalize, seed=-1)
-        if len(a):
-            parts.append(a)
-    return sr, _concat_xfade(parts, sr)
+        sr, wav = generate_one(text, label=label, ref_audio=ref_audio, ref_text=ref_text,
+                               language=language, num_steps=num_steps, guidance_scale=guidance_scale,
+                               speaker_scale=speaker_scale, normalize=normalize, seed=seed)
+    else:
+        if seed is not None and int(seed) >= 0:
+            _seed(seed)   # сид 1 раз на весь текст; чанки наследуют продолжение RNG
+        sr, parts = SR_FALLBACK, []
+        for i, ch in enumerate(chunks):
+            if _CANCEL:
+                break
+            print(f"[gen] чанк {i + 1}/{len(chunks)}", flush=True)
+            sr, a = generate_one(ch, label=label, ref_audio=ref_audio, ref_text=ref_text,
+                                 language=language, num_steps=num_steps, guidance_scale=guidance_scale,
+                                 speaker_scale=speaker_scale, normalize=normalize, seed=-1)
+            if len(a):
+                parts.append(a)
+        wav = _concat_xfade(parts, sr)
+    if not len(wav):
+        return sr, np.asarray(wav, np.float32)
+    return sr, _peak_limit(_loudness_normalize(wav, sr))
 
 
 def synth_text_stream(text, *, label=DEFAULT_MODEL, ref_audio=None, ref_text=None, language=None,
@@ -400,4 +407,5 @@ def synth_turns(turns, *, label=DEFAULT_MODEL, gap=0.3, seed=-1, on_progress=Non
                               ref_text=t.get("ref_text"), seed=-1, **kw)
             if len(a):
                 parts.append(a)
-    return sr, _concat_gap(parts, sr, gap=gap)
+    # турны уже нормализованы в synth_text → склеиваем с паузой без повторной нормализации
+    return sr, _concat_gap(parts, sr, gap=gap, normalize=False)
