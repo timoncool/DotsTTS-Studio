@@ -237,14 +237,15 @@ def _chunk(text, max_chars=CHUNK_MAX_CHARS):
 # Референс: обрезка длинного клипа во временный wav (ограничить prefill)
 # ----------------------------------------------------------------------------
 def _prep_ref(path):
-    """Вернуть путь к рефу; если длиннее REF_MAX_SEC — обрезанная temp-копия (caller её удалит)."""
+    """Реф → (путь, обрезан?). Если длиннее REF_MAX_SEC — обрезанная temp-копия (caller её удалит).
+    Флаг 'обрезан' нужен, чтобы НЕ слать транскрипт полного аудио к обрезанному (рассинхрон → разнос)."""
     if not path:
-        return None
+        return None, False
     try:
         import soundfile as sf
         info = sf.info(path)
         if info.frames / max(info.samplerate, 1) <= REF_MAX_SEC:
-            return path
+            return path, False
         import tempfile
         import numpy as np
         data, sr = sf.read(path, dtype="float32", always_2d=True)
@@ -252,11 +253,11 @@ def _prep_ref(path):
         f = tempfile.NamedTemporaryFile(suffix="._dotsref.wav", delete=False, dir=os.environ.get("TEMP"))
         f.close()
         sf.write(f.name, data.astype(np.float32), sr)
-        print(f"[gen] референс обрезан до {REF_MAX_SEC}с", flush=True)
-        return f.name
+        print(f"[gen] референс обрезан до {REF_MAX_SEC}с → транскрипт отключён (x-vector)", flush=True)
+        return f.name, True
     except Exception as e:
         print(f"[gen] ref prep: {e}", flush=True)
-        return path
+        return path, False
 
 
 def _cleanup_ref(prepared, original):
@@ -280,8 +281,9 @@ def _prep_call(label, ref_audio, ref_text, num_steps):
     x-vector = аудио без транскрипта; continuation-клон = аудио + транскрипт."""
     rt = get_runtime(label)
     steps = 4 if is_mf(label) else int(num_steps)
-    pa = _prep_ref(ref_audio) if ref_audio else None
-    pt = ref_text.strip() if (ref_text and ref_text.strip() and pa) else None
+    pa, trimmed = _prep_ref(ref_audio) if ref_audio else (None, False)
+    # транскрипт относится к ПОЛНОМУ рефу; если обрезали — он не совпадёт → отключаем (x-vector)
+    pt = ref_text.strip() if (ref_text and ref_text.strip() and pa and not trimmed) else None
     return rt, steps, pa, pt
 
 
