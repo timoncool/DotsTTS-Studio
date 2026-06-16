@@ -1,0 +1,12 @@
+python/
+dots.tts/
+models/
+cache/
+temp/
+output/
+downloads/
+voices/
+ffmpeg/
+__pycache__/
+*.pyc
+cuda_version.txt
