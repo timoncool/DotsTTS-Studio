@@ -78,10 +78,11 @@ def get_runtime(label=DEFAULT_MODEL, precision=None):
     unload()
     from dots_tts.runtime import DotsTtsRuntime
     print(f"[dots] загрузка {repo} ({precision}, optimize=False)...", flush=True)
-    # max_generate_length с запасом: реф ≤15с + длинная генерация укладываются
+    # max_generate_length=500 как в апстрим-демо (≈80с потолок); текст чанкуется ≤200 симв,
+    # реф ≤12с (~75 патчей) → с запасом хватает, а кап рунэвея ниже (было 4000 ≈ 640с)
     # (рантайм режет schedule prompt+generated по этому кэпу).
     _runtime = DotsTtsRuntime.from_pretrained(
-        repo, precision=precision, optimize=False, max_generate_length=4000)
+        repo, precision=precision, optimize=False, max_generate_length=500)
     _loaded = (repo, precision)
     print(f"[dots] готово: {repo} @ {_runtime.sample_rate} Гц", flush=True)
     return _runtime
