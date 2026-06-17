@@ -371,23 +371,25 @@ def _clean_txt(t):
 
 
 def cb_prep_preset(name):
-    """Пресет выбран → показать обрезанный (≤12с) реф + Parakeet-транскрипт прямо в UI (видно сразу)."""
+    """Пресет выбран → совпадающий транскрипт (обрезка 12с + Parakeet). Сам реф идёт из списка
+    (cb_clone берёт voice_path), поэтому слот загрузки очищаем — он для СВОЕЙ записи/файла."""
     if not name or name == OWN_FILE:
         return None, ""
     clip, txt = _resolve_ref(voice_path(name), voice_transcript(name))   # длинный → обрезка 12с + Parakeet
     if not txt:
         txt = transcribe(clip)
-    return clip, _clean_txt(txt)
+    return None, _clean_txt(txt)
 
 
 def cb_prep_upload(path):
-    """Загрузка/запись рефа → обрезать длинный до 12с + Parakeet-транскрипт, показать в UI."""
+    """Загрузка/запись СВОЕГО рефа → авто-транскрипт (обрезку длинного учтёт _resolve_ref на генерации).
+    Файл оставляем в виджете как есть — нативная загрузка играется корректно."""
     if not path:
         return gr.update(), ""
     clip, txt = _resolve_ref(path, "")
     if not txt:
         txt = transcribe(clip)
-    return gr.update(value=clip), _clean_txt(txt)
+    return gr.update(), _clean_txt(txt)
 
 
 # ----------------------------------------------------------------------------
@@ -803,6 +805,10 @@ def build():
         model_dd.change(_model_settings, [model_dd],
                         [c_steps, m_steps, bt_steps, c_guid, m_guid, bt_guid])
 
+        # первая загрузка страницы → подготовить дефолт-голос (обрезка + транскрипт видны сразу,
+        # без demo.load c_preset.change не срабатывает и реф/транскрипт пустые)
+        demo.load(cb_prep_preset, [c_preset], [c_ref, c_ref_text])
+
     return demo
 
 
@@ -813,6 +819,10 @@ def prewarm():
     try:
         print("[prewarm] загрузка модели на старте...", flush=True)
         eng.get_runtime(eng.DEFAULT_MODEL)   # только загрузка (compile нет); без мусорной генерации
+        try:
+            cb_prep_preset(_DEF_VOICE)        # прогреть дефолт-голос (обрезка+Parakeet→диск-кэш) → первая загрузка UI мгновенная
+        except Exception as e:
+            print(f"[prewarm] голос: {e}", flush=True)
         print("[prewarm] готово — модель в памяти", flush=True)
     except Exception as e:
         print(f"[prewarm] пропущен ({e})", flush=True)
@@ -823,6 +833,7 @@ if __name__ == "__main__":
     prewarm()
     build().queue(default_concurrency_limit=1).launch(
         server_name="127.0.0.1", server_port=None,
+        allowed_paths=[str(VOICES_DIR), str(REF_CACHE_DIR), str(OUTPUT_DIR)],   # иначе gradio не отдаёт реф-аудио из этих папок (плеер 0:00)
         inbrowser=(not eng.DOTS_MOCK and os.environ.get("NO_AUTO_BROWSER", "").lower() not in ("1", "true", "yes")),
         i18n=I18N, theme=gr.themes.Soft(primary_hue="indigo", secondary_hue="purple"),
         css=CSS, js=DARK_JS, head=HEAD_SCRIPT, show_error=True)
