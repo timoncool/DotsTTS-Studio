@@ -371,25 +371,23 @@ def _clean_txt(t):
 
 
 def cb_prep_preset(name):
-    """Пресет выбран → совпадающий транскрипт (обрезка 12с + Parakeet). Сам реф идёт из списка
-    (cb_clone берёт voice_path), поэтому слот загрузки очищаем — он для СВОЕЙ записи/файла."""
+    """Пресет выбран → обрезанный (≤12с) реф в плеере + совпадающий транскрипт (Parakeet) — видно сразу."""
     if not name or name == OWN_FILE:
         return None, ""
     clip, txt = _resolve_ref(voice_path(name), voice_transcript(name))   # длинный → обрезка 12с + Parakeet
     if not txt:
         txt = transcribe(clip)
-    return None, _clean_txt(txt)
+    return clip, _clean_txt(txt)
 
 
 def cb_prep_upload(path):
-    """Загрузка/запись СВОЕГО рефа → авто-транскрипт (обрезку длинного учтёт _resolve_ref на генерации).
-    Файл оставляем в виджете как есть — нативная загрузка играется корректно."""
+    """Загрузка/запись рефа → обрезанный клип в плеере + авто-транскрипт."""
     if not path:
         return gr.update(), ""
     clip, txt = _resolve_ref(path, "")
     if not txt:
         txt = transcribe(clip)
-    return gr.update(), _clean_txt(txt)
+    return gr.update(value=clip), _clean_txt(txt)
 
 
 # ----------------------------------------------------------------------------
