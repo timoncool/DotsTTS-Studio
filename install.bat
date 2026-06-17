@@ -124,6 +124,15 @@ REM ============================================================
 echo [7/8] Устанавливаю зависимости...
 python\python.exe -m pip install -r requirements.txt -c "dots.tts\constraints\recommended.txt" --no-warn-script-location
 
+echo Устанавливаю ASR Parakeet (onnx-asr, как в shorts-dub)...
+python\python.exe -m pip install onnx-asr==0.11.0 sherpa-onnx==1.13.2 --no-warn-script-location
+if "%CUDA_VERSION%"=="cpu" goto :ort_cpu
+python\python.exe -m pip install onnxruntime-gpu==1.23.2 nvidia-cublas-cu12 nvidia-cudnn-cu12 nvidia-cufft-cu12 nvidia-curand-cu12 nvidia-cusparse-cu12 --no-warn-script-location
+goto :ort_done
+:ort_cpu
+python\python.exe -m pip install onnxruntime --no-warn-script-location
+:ort_done
+
 REM ============================================================
 REM  Шаг 8: стартовый voice-pack (реф-голоса для клонирования)
 REM ============================================================
@@ -150,6 +159,10 @@ set "HF_HOME=%SCRIPT_DIR%models"
 set "HF_HUB_DISABLE_SYMLINKS_WARNING=1"
 python\python.exe -c "from huggingface_hub import snapshot_download; snapshot_download('rednote-hilab/dots.tts-mf')"
 if errorlevel 1 echo [ВНИМАНИЕ] Модель не докачалась - скачается при первом запуске.
+
+echo Загружаю ASR Parakeet (int8 ~670 МБ, для авто-транскрипта и обрезки длинных рефов)...
+python\python.exe -c "import onnx_asr; onnx_asr.load_model('nemo-parakeet-tdt-0.6b-v3', quantization='int8')"
+if errorlevel 1 echo [ВНИМАНИЕ] Parakeet не докачался - скачается при первом распознавании.
 
 echo %CUDA_VERSION%> cuda_version.txt
 

@@ -270,11 +270,48 @@ def _cleanup_ref(prepared, original):
             pass
 
 
-def _lang(language):
-    if not language:
+def _script_lang(text):
+    """Доминирующий скрипт текста → языковой код dots.tts. Авто-детект модели знает только zh/en,
+    поэтому кириллицу/кану/арабицу и пр. подставляем сами, иначе модель лепит кашу."""
+    import unicodedata
+    c = {}
+    for ch in text or "":
+        if not ch.isalpha():
+            continue
+        try:
+            nm = unicodedata.name(ch)
+        except ValueError:
+            continue
+        if "CYRILLIC" in nm:
+            k = "RU"
+        elif "HANGUL" in nm:
+            k = "KO"
+        elif "HIRAGANA" in nm or "KATAKANA" in nm:
+            k = "JA"
+        elif "CJK" in nm:
+            k = "ZH"
+        elif "ARABIC" in nm:
+            k = "AR"
+        elif "HEBREW" in nm:
+            k = "HE"
+        elif "DEVANAGARI" in nm:
+            k = "HI"
+        elif "GREEK" in nm:
+            k = "EL"
+        else:
+            continue   # латиница и пр. → пусть dots.tts сам детектит (en)
+        c[k] = c.get(k, 0) + 1
+    return max(c, key=c.get) if c else None
+
+
+def _lang(language, text=""):
+    s = str(language or "").strip()
+    low = s.lower()
+    if low in ("", "none", "—", "авто", "auto"):
         return None
-    s = str(language).strip()
-    return None if s.lower() in ("", "none", "—", "авто", "auto") else s
+    if low == "auto_detect":
+        return _script_lang(text) or "auto_detect"   # кириллица→RU, кана→JA…; латиница→dots.tts(en)
+    return s
 
 
 def _prep_call(label, ref_audio, ref_text, num_steps):
@@ -282,10 +319,15 @@ def _prep_call(label, ref_audio, ref_text, num_steps):
     x-vector = аудио без транскрипта; continuation-клон = аудио + транскрипт."""
     rt = get_runtime(label)
     steps = 4 if is_mf(label) else int(num_steps)
-    pa, trimmed = _prep_ref(ref_audio) if ref_audio else (None, False)
-    # транскрипт относится к ПОЛНОМУ рефу; если обрезали — он не совпадёт → отключаем (x-vector)
-    pt = ref_text.strip() if (ref_text and ref_text.strip() and pa and not trimmed) else None
-    return rt, steps, pa, pt
+    if not ref_audio:
+        return rt, steps, None, None
+    if ref_text and ref_text.strip():
+        # continuation-клон: транскрипт ОБЯЗАН совпадать с аудио (доки) → НЕ режем реф вообще.
+        # Рантайм кэширует кондишн рефа, так что повторное использование голоса дёшево.
+        return rt, steps, ref_audio, ref_text.strip()
+    # x-vector (только тембр, транскрипта нет → мисматчить нечего) → длинный реф можно подрезать
+    pa, _ = _prep_ref(ref_audio)
+    return rt, steps, pa, None
 
 
 # ----------------------------------------------------------------------------
@@ -306,7 +348,7 @@ def generate_one(text, *, label=DEFAULT_MODEL, ref_audio=None, ref_text=None, la
         _seed(seed)
     rt, steps, pa, pt = _prep_call(label, ref_audio, ref_text, num_steps)
     try:
-        r = rt.generate(text=text, prompt_audio_path=pa, prompt_text=pt, language=_lang(language),
+        r = rt.generate(text=text, prompt_audio_path=pa, prompt_text=pt, language=_lang(language, text),
                         speaker_scale=float(speaker_scale), num_steps=steps,
                         guidance_scale=float(guidance_scale), normalize_text=bool(normalize))
     finally:
@@ -370,7 +412,7 @@ def synth_text_stream(text, *, label=DEFAULT_MODEL, ref_audio=None, ref_text=Non
             if _CANCEL:
                 break
             for chunk in rt.generate_stream(text=ch, prompt_audio_path=pa, prompt_text=pt,
-                                            language=_lang(language), speaker_scale=float(speaker_scale),
+                                            language=_lang(language, ch), speaker_scale=float(speaker_scale),
                                             num_steps=steps, guidance_scale=float(guidance_scale),
                                             normalize_text=bool(normalize)):
                 if _CANCEL:

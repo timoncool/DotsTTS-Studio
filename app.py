@@ -56,13 +56,15 @@ OUTPUT_DIR = SCRIPT_DIR / "output"
 VOICES_DIR = SCRIPT_DIR / "voices"
 OUTPUT_DIR.mkdir(exist_ok=True)
 VOICES_DIR.mkdir(exist_ok=True)
+REF_CACHE_DIR = SCRIPT_DIR / "cache" / "refcache"   # обрезанный реф + транскрипт (переживает рестарт)
+REF_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 APP_NAME = "dots.tts Studio"
 DEVICE_INFO = eng.device_info()
 MODEL_CHOICES = list(eng.MODELS.keys())
 MAX_SPK = 4
 OWN_FILE = "— свой файл / own file —"
-_DEF_VOICE = "English_Female"   # дефолт-голос Озвучки (модель клонирующая — без рефа щелчки)
+_DEF_VOICE = "RU_Male_Gabidullin_ruslan"   # дефолт-голос Озвучки (русский; модель клонирующая — без рефа щелчки)
 
 CLOUD_VOICES_REPO = "Slait/russia_voices"
 CLOUD_VOICES_BASE = "https://huggingface.co/datasets/Slait/russia_voices/resolve/main"
@@ -364,6 +366,30 @@ def cb_preset(name):
     return voice_path(name), voice_transcript(name)
 
 
+def _clean_txt(t):
+    return t if (isinstance(t, str) and t and not t.startswith("⚠")) else ""
+
+
+def cb_prep_preset(name):
+    """Пресет выбран → показать обрезанный (≤12с) реф + Parakeet-транскрипт прямо в UI (видно сразу)."""
+    if not name or name == OWN_FILE:
+        return None, ""
+    clip, txt = _resolve_ref(voice_path(name), voice_transcript(name))   # длинный → обрезка 12с + Parakeet
+    if not txt:
+        txt = transcribe(clip)
+    return clip, _clean_txt(txt)
+
+
+def cb_prep_upload(path):
+    """Загрузка/запись рефа → обрезать длинный до 12с + Parakeet-транскрипт, показать в UI."""
+    if not path:
+        return gr.update(), ""
+    clip, txt = _resolve_ref(path, "")
+    if not txt:
+        txt = transcribe(clip)
+    return gr.update(value=clip), _clean_txt(txt)
+
+
 # ----------------------------------------------------------------------------
 # ASR авто-транскрипт референса (Moonshine)
 # ----------------------------------------------------------------------------
@@ -371,12 +397,26 @@ _ASR = None
 
 
 def _get_asr():
+    """NVIDIA Parakeet-TDT-0.6B-v3 (onnx-asr, int8 ~670 МБ, мультиязычный вкл. русский) — как в shorts-dub."""
     global _ASR
     if _ASR is None:
-        from transformers import WhisperProcessor, WhisperForConditionalGeneration
-        proc = WhisperProcessor.from_pretrained("openai/whisper-base")
-        amodel = WhisperForConditionalGeneration.from_pretrained("openai/whisper-base").eval()
-        _ASR = (proc, amodel)
+        import onnx_asr
+        import onnxruntime as ort
+        dev = "cpu"
+        try:
+            import torch
+            dev = "cuda" if torch.cuda.is_available() else "cpu"
+        except Exception:
+            pass
+        if dev == "cuda":
+            try:
+                ort.preload_dlls()   # подтянуть cufft/cublas/cudnn из nvidia-*-cu12 wheels
+            except Exception:
+                pass
+            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        else:
+            providers = ["CPUExecutionProvider"]
+        _ASR = onnx_asr.load_model("nemo-parakeet-tdt-0.6b-v3", quantization="int8", providers=providers)
     return _ASR
 
 
@@ -386,23 +426,83 @@ def transcribe(ref_audio):
     if eng.DOTS_MOCK:
         return "пример транскрипта (mock)"
     try:
-        import torch
         import soundfile as sf
-        import torchaudio
+        import numpy as np
+        import tempfile
         if _ASR is None:
-            gr.Info("Первая загрузка ASR-модели (Whisper, ~290 МБ)… / Downloading ASR model…")
-        proc, amodel = _get_asr()
-        data, sr = sf.read(ref_audio, dtype="float32", always_2d=True)
-        wav = torch.from_numpy(data).mean(dim=1)
-        if sr != 16000:
-            wav = torchaudio.functional.resample(wav, sr, 16000)
-        inp = proc(wav.numpy(), sampling_rate=16000, return_tensors="pt")
-        with torch.no_grad():
-            tok = amodel.generate(inp.input_features, max_new_tokens=128)
-        return proc.batch_decode(tok, skip_special_tokens=True)[0].strip()
+            gr.Info("Первая загрузка ASR (Parakeet)… / Downloading ASR model…")
+        m = _get_asr()
+        # onnx_asr читает ТОЛЬКО RIFF/PCM-WAV ("file does not start with RIFF id" на mp3).
+        # Декодируем сами (soundfile тянет mp3/flac/ogg) → моно → чистый WAV → распознаём.
+        data, sr = sf.read(str(ref_audio), dtype="float32", always_2d=True)
+        data = data.mean(axis=1)
+        f = tempfile.NamedTemporaryFile(suffix="._asr.wav", delete=False, dir=os.environ.get("TEMP"))
+        f.close()
+        sf.write(f.name, data.astype(np.float32), sr)
+        res = m.recognize(f.name)
+        try:
+            os.unlink(f.name)
+        except Exception:
+            pass
+        txt = res if isinstance(res, str) else getattr(res, "text", str(res))
+        return (txt or "").strip()
     except Exception as e:
         print(f"[asr] {e}")
         return "⚠️ Распознавание не удалось / ASR failed"
+
+
+# Длинный реф щёлкает и перегенерит (доки: ~10с идеал). Обрезать без ре-транскрипта = рассинхрон.
+# Поэтому: длинный реф → обрезка ~12с + ПЕРЕ-распознавание (Parakeet) → совпадающий короткий транскрипт.
+_REF_RESOLVED = {}
+_REF_TRIM_SEC = 12
+
+
+def _ref_cache_key(ref_path, dur):
+    """Стабильный ключ по содержимому файла (имя+размер+mtime+обрезка+длина) — переживает рестарт."""
+    import hashlib
+    st = os.stat(ref_path)
+    raw = f"{os.path.basename(ref_path)}|{st.st_size}|{int(st.st_mtime)}|{_REF_TRIM_SEC}|{round(dur, 1)}"
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _resolve_ref(ref_path, transcript):
+    """Реф → (короткий реф, совпадающий транскрипт). Короткий — как есть; длинный — обрезка + ре-ASR.
+    Кэш на диск (cache/refcache): тот же голос распознаётся Parakeet'ом один раз — даже после рестарта."""
+    if not ref_path:
+        return None, transcript
+    try:
+        import soundfile as sf
+        info = sf.info(ref_path)
+        dur = info.frames / max(info.samplerate, 1)
+        if dur <= _REF_TRIM_SEC + 4:
+            t = transcript or ""
+            return ref_path, ("" if t.startswith("⚠") else t)   # ошибка ASR ≠ транскрипт
+        mkey = (ref_path, round(dur, 1))
+        if mkey in _REF_RESOLVED:               # горячий кэш (память)
+            return _REF_RESOLVED[mkey]
+        if eng.DOTS_MOCK:
+            return ref_path, (transcript or "")
+        ck = _ref_cache_key(ref_path, dur)
+        cwav, ctxt = REF_CACHE_DIR / f"{ck}.wav", REF_CACHE_DIR / f"{ck}.txt"
+        if cwav.exists() and ctxt.exists():      # диск-кэш: без повторного Parakeet
+            res = (str(cwav), ctxt.read_text(encoding="utf-8"))
+            _REF_RESOLVED[mkey] = res
+            print(f"[ref] {os.path.basename(ref_path)}: кэш-хит (диск)", flush=True)
+            return res
+        import numpy as np
+        data, sr = sf.read(ref_path, dtype="float32", always_2d=True)
+        data = data[: int(sr * _REF_TRIM_SEC)].mean(axis=1)
+        sf.write(str(cwav), data.astype(np.float32), sr)
+        newtxt = transcribe(str(cwav))
+        if not isinstance(newtxt, str) or newtxt.startswith("⚠"):
+            newtxt = ""                          # ASR не вышел → x-vector (только тембр)
+        ctxt.write_text(newtxt, encoding="utf-8")
+        _REF_RESOLVED[mkey] = (str(cwav), newtxt)
+        print(f"[ref] {os.path.basename(ref_path)}: {dur:.0f}с → {_REF_TRIM_SEC}с + Parakeet (закэшировано)", flush=True)
+        return str(cwav), newtxt
+    except Exception as e:
+        print(f"[ref] resolve: {e}", flush=True)
+        return ref_path, (transcript or "")
 
 
 # ----------------------------------------------------------------------------
@@ -501,6 +601,7 @@ def cb_tts(text, model, voice, language, steps, guidance, spk, normalize, seed):
     eng.clear_cancel()
     ref = voice_path(voice) if voice and voice != OWN_FILE else None
     rtext = voice_transcript(voice) if voice and voice != OWN_FILE else ""
+    ref, rtext = _resolve_ref(ref, rtext)   # длинный реф → обрезка+ре-ASR (иначе щелчки/перегенерация)
     try:
         sr, wav = eng.synth_text(text, label=model, ref_audio=ref, ref_text=rtext, language=language,
                                  num_steps=steps, guidance_scale=guidance, speaker_scale=spk,
@@ -515,6 +616,7 @@ def cb_clone(text, model, ref_audio, ref_text, preset, language, steps, guidance
     """Клонирование (без стриминга): полный синтез + нормализация + сохранение."""
     eng.clear_cancel()
     ref = ref_audio or (voice_path(preset) if preset and preset != OWN_FILE else None)
+    ref, ref_text = _resolve_ref(ref, ref_text)   # длинный реф → обрезка+ре-ASR (иначе щелчки/перегенерация)
     try:
         sr, wav = eng.synth_text(text, label=model, ref_audio=ref, ref_text=ref_text, language=language,
                                  num_steps=steps, guidance_scale=guidance, speaker_scale=spk,
@@ -625,29 +727,13 @@ def build():
             return steps, guid, spk, seed, norm
 
         with gr.Tabs():
-            # 1. Озвучка
+            # 1. Озвучка — голос из списка ИЛИ свой реф + ASR (механизм один: модель клонирующая)
             with gr.Tab(T("tab_tts")):
                 with gr.Row():
                     with gr.Column():
-                        t_text = gr.Textbox(label=T("text"), placeholder=T("ph_text"), lines=5)
-                        _tvs = scan_voices()
-                        t_voice = gr.Dropdown(_tvs, value=(_DEF_VOICE if _DEF_VOICE in _tvs else (_tvs[0] if _tvs else None)),
-                                              label=T("tts_voice"))
-                        with gr.Accordion(T("advanced"), open=False):
-                            t_steps, t_guid, t_spk, t_seed, t_norm = _adv()
-                        t_btn = gr.Button(T("generate"), variant="primary", size="lg")
-                        t_stop = gr.Button(T("stop"), variant="stop")
-                    t_out = gr.Audio(label=T("result"), type="numpy", autoplay=True)
-                gr.Examples(TTS_EXAMPLES, inputs=[t_text], label=T("examples"))
-                ev_tts = t_btn.click(cb_tts, [t_text, model_dd, t_voice, lang_dd, t_steps, t_guid, t_spk, t_norm, t_seed], [t_out])
-                t_stop.click(eng.request_cancel, None, None, queue=False, cancels=[ev_tts])
-
-            # 2. Клонирование
-            with gr.Tab(T("tab_clone")):
-                with gr.Row():
-                    with gr.Column():
                         c_text = gr.Textbox(label=T("text"), placeholder=T("ph_clone"), lines=4)
-                        c_preset = gr.Dropdown([OWN_FILE] + scan_voices(), value=OWN_FILE, label=T("voice_preset"))
+                        _cv = scan_voices()
+                        c_preset = gr.Dropdown([OWN_FILE] + _cv, value=(_DEF_VOICE if _DEF_VOICE in _cv else OWN_FILE), label=T("voice_preset"))
                         c_refresh = gr.Button(T("refresh"), size="sm")
                         c_ref = gr.Audio(label=T("ref_voice"), type="filepath", sources=["upload", "microphone"])
                         c_ref_text = gr.Textbox(label=T("ref_text"), lines=2, placeholder=T("ph_ref_text"))
@@ -658,6 +744,7 @@ def build():
                         c_btn = gr.Button(T("generate"), variant="primary", size="lg")
                         c_stop = gr.Button(T("stop"), variant="stop")
                     c_out = gr.Audio(label=T("result"), type="numpy", autoplay=True)
+                gr.Examples(TTS_EXAMPLES, inputs=[c_text], label=T("examples"))
                 with gr.Accordion(T("cloud_title"), open=False):
                     cl_status = gr.Textbox(label=T("cloud_status"), interactive=False)
                     with gr.Row():
@@ -665,7 +752,9 @@ def build():
                         cl_all = gr.Button(T("download_all"), size="sm")
                     cl_voices = gr.CheckboxGroup(choices=[], label=T("cloud_voices"))
                     cl_dl = gr.Button(T("download_sel"), variant="primary", size="sm")
-                c_preset.change(cb_preset, [c_preset], [c_ref, c_ref_text])
+                c_preset.change(cb_prep_preset, [c_preset], [c_ref, c_ref_text])
+                c_ref.upload(cb_prep_upload, [c_ref], [c_ref, c_ref_text])
+                c_ref.stop_recording(cb_prep_upload, [c_ref], [c_ref, c_ref_text])
                 c_tr_btn.click(transcribe, [c_ref], [c_ref_text])
                 c_refresh.click(lambda: gr.update(choices=[OWN_FILE] + scan_voices()), None, [c_preset])
                 cl_load.click(cb_load_cloud, None, [cl_status, cl_voices])
@@ -710,9 +799,9 @@ def build():
             mf = eng.is_mf(label)
             steps_u = gr.update(value=(4 if mf else 10), interactive=not mf)
             guid_u = gr.update(interactive=not mf)
-            return [steps_u, steps_u, steps_u, steps_u, guid_u, guid_u, guid_u, guid_u]
+            return [steps_u, steps_u, steps_u, guid_u, guid_u, guid_u]
         model_dd.change(_model_settings, [model_dd],
-                        [t_steps, c_steps, m_steps, bt_steps, t_guid, c_guid, m_guid, bt_guid])
+                        [c_steps, m_steps, bt_steps, c_guid, m_guid, bt_guid])
 
     return demo
 
