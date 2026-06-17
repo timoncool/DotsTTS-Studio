@@ -719,7 +719,7 @@ def build():
 
         def _adv():
             # старт под дефолтную модель: для mf шаги=4 и guidance заблокированы (CFG вшит в MeanFlow)
-            steps = gr.Slider(1, 32, (4 if _mf0 else 10), step=1, label=T("steps"), interactive=not _mf0)
+            steps = gr.Slider(1, 32, (4 if _mf0 else 24), step=1, label=T("steps"), interactive=not _mf0)
             guid = gr.Slider(1.0, 2.0, 1.2, step=0.1, label=T("guidance"), interactive=not _mf0, info=T("guid_info"))
             spk = gr.Slider(0.0, 3.0, 1.5, step=0.1, label=T("speaker_scale"), info=T("spk_info"))
             seed = gr.Number(-1, label=T("seed"), precision=0)
@@ -794,10 +794,10 @@ def build():
                 bt_stop.click(eng.request_cancel, None, None, queue=False, cancels=[ev_batch])
 
         # Смена модели → подходящие настройки: для mf шаги=4 И guidance заблокированы (CFG вшит),
-        # soar/base — шаги 10 (10–32) и guidance активны.
+        # soar/base — шаги 24 (тест: @10 слабо 0.66, @24≈0.92, @32 0.95) и guidance активны.
         def _model_settings(label):
             mf = eng.is_mf(label)
-            steps_u = gr.update(value=(4 if mf else 10), interactive=not mf)
+            steps_u = gr.update(value=(4 if mf else 24), interactive=not mf)
             guid_u = gr.update(interactive=not mf)
             return [steps_u, steps_u, steps_u, guid_u, guid_u, guid_u]
         model_dd.change(_model_settings, [model_dd],
