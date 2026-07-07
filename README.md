@@ -73,11 +73,11 @@ Built on the [dots.tts](https://huggingface.co/rednote-hilab) family — a ~2B f
 
 ## Star History
 
-<a href="https://www.star-history.com/?repos=timoncool%2FDotsTTS-Studio&type=date&legend=top-left">
+<a href="https://github.com/timoncool/DotsTTS-Studio/stargazers">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=timoncool/DotsTTS-Studio&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=timoncool/DotsTTS-Studio&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=timoncool/DotsTTS-Studio&type=date&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="docs/stars-dark.svg" />
+   <source media="(prefers-color-scheme: light)" srcset="docs/stars-light.svg" />
+   <img alt="Star History Chart" src="docs/stars-light.svg" />
  </picture>
 </a>
 
