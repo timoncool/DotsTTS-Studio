@@ -1,3 +1,6 @@
+> [!WARNING]
+> **This project is no longer developed.** If you need this feature, go to **[Speech Studio](https://github.com/timoncool/speech-studio)** — a free offline studio for text-to-speech, voice cloning and speech recognition.
+
 <div align="center">
 
 # dots.tts Studio
