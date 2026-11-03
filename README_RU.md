@@ -1,3 +1,6 @@
+> [!WARNING]
+> **Проект больше не развивается.** Если вам нужна такая функция, переходите в **[Speech Studio](https://github.com/timoncool/speech-studio)** — бесплатную офлайн-студию: озвучка, клонирование голоса и распознавание речи.
+
 <div align="center">
 
 # dots.tts Studio
