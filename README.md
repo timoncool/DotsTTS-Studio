@@ -1,5 +1,5 @@
 > [!WARNING]
-> **This project is no longer developed.** If you need this feature, go to **[Speech Studio](https://github.com/timoncool/speech-studio)** — a free offline studio for text-to-speech, voice cloning and speech recognition.
+> **This project is no longer developed.** Multilingual text-to-speech, zero-shot voice cloning and streaming speech now live in **[Speech Studio](https://github.com/timoncool/speech-studio)**. It brings together the latest AI technology: text-to-speech with Higgs Audio v3, Fish Audio Drama 3, Qwen3-TTS and Supertonic 3, voice cloning, voice design from a description, audiobooks and podcasts, speech recognition with speaker separation on Parakeet, Nemotron and CrisperWhisper, and voice conversations with an AI agent. Free and offline, on Windows, macOS and Linux.
 
 <div align="center">
 
